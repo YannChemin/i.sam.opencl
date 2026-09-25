@@ -1,0 +1,229 @@
+<h2>DESCRIPTION</h2>
+
+<em>i.sam.opencl</em> segments a 3-band imagery group with the Segment
+Anything Model (SAM) and writes the segments as a clean vector area map.
+The whole network, image encoder and mask decoder, runs on an OpenCL
+device (GPU or CPU), with weights read directly from the original PyTorch
+checkpoint file: neither Python nor PyTorch is needed at run time.
+
+<p>
+The module implements SAM's automatic mask generation: the model is
+prompted with a regular grid of points, and the masks it returns are kept
+according to their predicted quality and stability, de-duplicated and
+cleaned. The overlapping masks are then turned into a non-overlapping,
+topologically clean vector map with one attribute row per segment.
+
+<p>
+The <b>group</b> (or its <b>subgroup</b>) must contain exactly three
+raster maps, which are used as the red, green and blue channels in the
+order they are listed in the group (see <em>i.group</em>). Each band is
+stretched linearly between its lower and upper <b>percentile</b> to the
+0-255 range SAM was trained on. Cells that are NULL in any band are not
+segmented. Processing is done in the current computational region.
+
+<h3>Checkpoint</h3>
+
+The <b>checkpoint</b> is one of the original model files published with
+SAM; the model variant is detected from the tensor shapes:
+
+<ul>
+<li>ViT-H: <a href="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth">sam_vit_h_4b8939.pth</a>
+  (2.4 GiB, best quality),</li>
+<li>ViT-L: <a href="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth">sam_vit_l_0b3195.pth</a>
+  (1.2 GiB),</li>
+<li>ViT-B: <a href="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth">sam_vit_b_01ec64.pth</a>
+  (358 MiB, fastest).</li>
+</ul>
+
+<p>The weights are not installed with the module. Instead of one
+<b>checkpoint</b> file, <b>weights_dir</b> can name the folder where the
+checkpoints were downloaded. A checkpoint is recognised there by
+<code>vit_h</code>, <code>vit_l</code> or <code>vit_b</code> in its
+<code>.pth</code> file name, so renamed copies such as
+<code>sam_vit_h_checkpoint.pth</code> are found too. The best model present
+is used (ViT-H, then ViT-L, then ViT-B), or the one chosen with
+<b>model</b>; the module checks that the file really holds that model. If a
+folder holds several files of the chosen model, the first in
+alphabetical order is used, with a warning.</p>
+
+<h3>Mask generation</h3>
+
+The region is processed in square crops. A region no larger than
+<b>tile_size</b> cells is one crop, a larger region is split into tiles
+of <b>tile_size</b> cells overlapping by <b>tile_overlap</b> cells. With
+<b>crop_layers</b> greater than 0, each tile is additionally segmented in
+zoomed-in sub-crops (4 in layer 1, 16 in layer 2, ...), prompted with
+<b>points_per_side</b> divided by <b>crop_points_downscale</b> per layer.
+
+<p>
+Each crop is resized so that its longest side is 1024 pixels and passed
+through the image encoder. The mask decoder is then prompted with a grid
+of <b>points_per_side</b> x <b>points_per_side</b> points, <b>batch</b>
+prompts at a time, returning three candidate masks per point. A mask is
+kept if its predicted IoU exceeds <b>iou_threshold</b> and its stability
+score (the IoU of the mask thresholded at plus and minus
+<b>stability_offset</b>) is at least <b>stability_threshold</b>.
+Duplicates whose bounding boxes overlap by more than
+<b>nms_threshold</b> (IoU) are suppressed, keeping the best one. Masks
+touching an inner tile or crop edge are discarded, since the neighbouring
+tile sees them whole. Holes and islands smaller than <b>minsize</b> cells
+are finally removed from each mask.
+
+<p>
+These steps and their defaults are those of the reference
+<code>SamAutomaticMaskGenerator</code>; on identical input,
+<em>i.sam.opencl</em> returns the same masks.
+
+<h3>Vectorization and cleaning</h3>
+
+SAM masks overlap: a field and the parcels inside it can both be masks.
+The <b>overlap</b> rule chooses which mask a cell belongs to: the
+smallest covering mask (<em>small</em>, finest partition, the default),
+the largest (<em>large</em>) or the one with the highest predicted IoU
+(<em>score</em>). Masks larger than <b>maxsize</b> cells are discarded
+first; this is the way to drop the single mask SAM often returns for the
+whole background of a scene.
+
+<p>
+The resulting label raster is cleaned: every connected piece smaller than
+<b>minsize</b> cells, including small unsegmented gaps, is merged into
+the neighbouring piece it shares the longest border with. Boundaries are
+traced along cell edges into shared topological boundaries, simplified
+with the Douglas-Peucker algorithm using the <b>simplify</b> tolerance
+(one cell by default; 0 keeps the raster staircase), and the topology is
+cleaned (boundaries broken at intersections, duplicates removed,
+pseudo-nodes merged, slivers smaller than one cell removed). Each segment
+gets one centroid, placed at the cell farthest from its border.
+
+<p>
+Areas without a centroid are gaps that no mask covers. The optional
+<b>raster</b> output holds the segment categories of the cleaned label
+raster before simplification.
+
+<h3>Attribute table</h3>
+
+<table>
+<tr><th>Column</th><th>Description</th></tr>
+<tr><td>cat</td><td>Segment category</td></tr>
+<tr><td>mask</td><td>Number of the SAM mask the segment comes from</td></tr>
+<tr><td>predicted_iou</td><td>Mask quality predicted by SAM</td></tr>
+<tr><td>stability</td><td>Stability score of the mask</td></tr>
+<tr><td>cells</td><td>Segment size in cells</td></tr>
+<tr><td>area</td><td>Area of the simplified polygon in square map units</td></tr>
+</table>
+
+<p>
+A mask split into several pieces by overlapping masks yields several
+segments with the same <b>mask</b> number.
+
+<h2>NOTES</h2>
+
+<h3>OpenCL device</h3>
+
+With <b>device</b>=<em>auto</em>, the first GPU is used, else the first
+CPU device. When several OpenCL platforms expose the same device (for
+example Mesa's Clover and rusticl drivers for AMD GPUs), the first
+platform on which the kernels compile is used; <b>platform</b> restricts
+the choice to platforms whose name contains the given text. Mesa's
+rusticl only exposes a GPU when enabled in the environment, e.g.
+<code>RUSTICL_ENABLE=radeonsi</code>. A CPU OpenCL implementation such as
+PoCL gives the same result but is about two orders of magnitude slower.
+
+<p>
+The ViT-H weights take 2.4 GiB of device memory and the work buffers
+about 1.3 GiB with the default <b>batch</b> of 32 prompts; a smaller
+<b>batch</b> reduces memory use. Buffers are kept below the device's
+maximum allocation size.
+
+<h3>Performance</h3>
+
+On an AMD Radeon Pro WX 7100 (Polaris, 16 GiB, Mesa rusticl), with the
+ViT-H model, loading the model takes 1-2 s, the image encoder 3.8 s per
+crop and the mask decoder 3.7 s per 1024 prompts (the default 32 x 32
+grid). A single-crop region is thus segmented in about 8 s. The number
+of crops, and so the run time, grows with the region size divided by
+<b>tile_size</b>, and with <b>crop_layers</b>.
+
+<h3>Choosing the resolution</h3>
+
+SAM sees every crop at 1024 x 1024 pixels. Objects should span at least
+ten or so pixels at that scale: set the region resolution and
+<b>tile_size</b> accordingly. A smaller <b>tile_size</b> zooms in (crops
+are upsampled to 1024 pixels), which finds smaller objects at the cost of
+more crops. For agricultural parcels in 2.5 to 10 m imagery, the defaults
+work well.
+
+<h3>Debugging aids</h3>
+
+When the environment variable <code>I_SAM_OPENCL_DUMP</code> names a
+directory, the 8-bit crops, the encoder inputs, the image embeddings and
+the list of masks are written there. The script
+<code>tests/reference_compare.py</code> in the source tree compares them
+with the PyTorch reference implementation.
+<code>I_SAM_OPENCL_PROFILE=1</code> prints the time spent in each OpenCL
+kernel.
+
+<h2>EXAMPLES</h2>
+
+<h3>Landsat scene (North Carolina sample dataset)</h3>
+
+Segment a true-colour composite of Landsat 7 bands 3, 2 and 1, dropping
+the background mask (the region has 475 x 527 cells):
+
+<div class="code"><pre>
+g.region raster=lsat7_2002_30 -p
+i.group group=lsat_rgb input=lsat7_2002_30,lsat7_2002_20,lsat7_2002_10
+i.sam.opencl group=lsat_rgb checkpoint=sam_vit_h_4b8939.pth \
+    output=lsat_segments maxsize=50000
+v.db.select lsat_segments | head
+</pre></div>
+
+<center>
+<img src="i.sam.opencl.png" alt="i.sam.opencl example"><br>
+<i>Segments of the Landsat 7 true-colour composite (yellow).</i>
+</center>
+
+<h3>Weights folder</h3>
+
+With the three checkpoints downloaded into <code>~/models/sam</code>, use the
+fastest model for a quick look:
+
+<div class="code"><pre>
+i.sam.opencl group=lsat_rgb weights_dir=~/models/sam model=vit_b \
+    output=lsat_quick maxsize=50000
+</pre></div>
+
+<h3>Agricultural parcels</h3>
+
+Delineate fields in a 2.5 m VNIR image with bands 1-3 grouped as RGB,
+keeping only segments of at least 0.1 ha (160 cells) and a label raster
+alongside the vector map:
+
+<div class="code"><pre>
+i.group group=vnir_rgb input=vnir.1,vnir.2,vnir.3
+g.region raster=vnir.1 -p
+i.sam.opencl group=vnir_rgb checkpoint=sam_vit_h_4b8939.pth \
+    output=fields raster=fields minsize=160
+</pre></div>
+
+<h2>REFERENCES</h2>
+
+Kirillov, A., Mintun, E., Ravi, N., Mao, H., Rolland, C., Gustafson, L.,
+Xiao, T., Whitehead, S., Berg, A. C., Lo, W.-Y., Dollar, P., Girshick, R.,
+2023. Segment Anything. Proceedings of the IEEE/CVF International
+Conference on Computer Vision (ICCV), 4015-4026.
+<a href="https://arxiv.org/abs/2304.02643">arXiv:2304.02643</a>
+
+<h2>SEE ALSO</h2>
+
+<em>
+<a href="i.group.html">i.group</a>,
+<a href="i.segment.html">i.segment</a>,
+<a href="r.to.vect.html">r.to.vect</a>,
+<a href="v.clean.html">v.clean</a>,
+<a href="v.generalize.html">v.generalize</a>
+</em>
+
+<h2>AUTHORS</h2>
+
+Yann Chemin
