@@ -171,11 +171,12 @@ def test_weights_dir_without_requested_model(session, tmp_path):
 def test_weights_dir_checks_model_of_file(session, checkpoint, tmp_path):
     """A file named as another model than the one it holds is refused."""
     tools = Tools(session=session)
-    (tmp_path / "sam_vit_b_renamed.pth").symlink_to(checkpoint)
+    name = "vit_h" if "vit_b" in Path(checkpoint).name else "vit_b"
+    (tmp_path / f"sam_{name}_renamed.pth").symlink_to(checkpoint)
 
     with pytest.raises(ToolError, match=r"does\s+not\s+hold"):
         tools.i_sam_opencl(
-            group="rgb", weights_dir=str(tmp_path), model="vit_b", output="out"
+            group="rgb", weights_dir=str(tmp_path), model=name, output="out"
         )
 
 
