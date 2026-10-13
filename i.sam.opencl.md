@@ -32,9 +32,19 @@ SAM; the model variant is detected from the tensor shapes:
 - ViT-B: [sam_vit_b_01ec64.pth](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth)
   (358 MiB, fastest).
 
-The weights are not installed with the module. Instead of one
-**checkpoint** file, **weights_dir** can name the folder where the
-checkpoints were downloaded. A checkpoint is recognised there by
+The weights are too large to be installed with the module. Without a
+**checkpoint** file, the module looks for one in the weights folder:
+**weights_dir**, by default the central folder `$SAM_MODELS_DIR/sam1`, or
+`~/models/sam/sam1` when the environment variable `SAM_MODELS_DIR` is not
+set. If the model is not there, its checkpoint is downloaded into that
+folder (created if needed) on first use and reused afterwards: the model
+chosen with **model**, or ViT-H when the folder holds no checkpoint at
+all. The download is checked against the published size, resumes where
+an interrupted one stopped, and waits for another run downloading the
+same file. The **-n** flag forbids downloading: a missing checkpoint is
+then an error.
+
+A checkpoint is recognised in the weights folder by
 `vit_h`, `vit_l` or `vit_b` in its `.pth` file name, so renamed copies
 such as `sam_vit_h_checkpoint.pth` are found too. The best model present
 is used (ViT-H, then ViT-L, then ViT-B), or the one chosen with
@@ -149,7 +159,8 @@ the 8-bit crops, the encoder inputs, the image embeddings and the list
 of masks are written there. The script `tests/reference_compare.py` in
 the source tree compares them with the PyTorch reference
 implementation. `I_SAM_OPENCL_PROFILE=1` prints the time spent in each
-OpenCL kernel.
+OpenCL kernel. `I_SAM_OPENCL_DOWNLOAD_URL` replaces the download location
+(`https://dl.fbaipublicfiles.com/segment_anything`), for a local mirror.
 
 ## EXAMPLES
 
@@ -171,12 +182,11 @@ v.db.select lsat_segments | head
 
 ### Weights folder
 
-With the three checkpoints downloaded into `~/models/sam`, use the
-fastest model for a quick look:
+Use the fastest model for a quick look; it is downloaded into
+`~/models/sam/sam1` the first time:
 
 ```sh
-i.sam.opencl group=lsat_rgb weights_dir=~/models/sam model=vit_b \
-    output=lsat_quick maxsize=50000
+i.sam.opencl group=lsat_rgb model=vit_b output=lsat_quick maxsize=50000
 ```
 
 ### Agricultural parcels

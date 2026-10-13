@@ -6,9 +6,8 @@
  *               SamAutomaticMaskGenerator (point grid prompts, IoU and
  *               stability filtering, box NMS, crop layers, small region
  *               postprocessing), extended with tiling of large regions.
- * COPYRIGHT:    (C) 2026 by Yann Chemin and the GRASS Development Team
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: Unlicense
  *
  *****************************************************************************/
 

@@ -4,9 +4,8 @@
  * AUTHOR(S):    Yann Chemin <dr.yann.chemin gmail.com>
  * PURPOSE:      Imagery group input, percentile stretch to 8-bit RGB and
  *               SAM encoder preprocessing.
- * COPYRIGHT:    (C) 2026 by Yann Chemin and the GRASS Development Team
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: Unlicense
  *
  *****************************************************************************/
 

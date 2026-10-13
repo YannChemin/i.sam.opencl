@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Unlicense
 """pytest fixtures for i.sam.opencl.
 
 The segmentation tests need the original SAM checkpoint and an OpenCL

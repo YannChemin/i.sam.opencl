@@ -1,6 +1,12 @@
+# SPDX-License-Identifier: Unlicense
 """Tests for i.sam.opencl."""
 
+import functools
+import http.server
+import shutil
+import threading
 import zipfile
+from pathlib import Path
 
 import pytest
 from conftest import RECTANGLES
@@ -93,12 +99,19 @@ def test_segments_form_a_partition(segmented):
     assert topo["areas"] >= topo["centroids"]
 
 
-def test_checkpoint_or_weights_dir_is_required(session):
-    """One source of weights must be given."""
-    tools = Tools(session=session)
+def _tools_with_env(session, **env):
+    return Tools(env={**session.env, **env})
 
-    with pytest.raises(ToolError, match=r"At\s+least\s+one"):
-        tools.i_sam_opencl(group="rgb", output="out")
+
+def test_default_weights_dir(session, tmp_path):
+    """Without checkpoint or weights_dir, the central folder
+    $SAM_MODELS_DIR/sam1 is searched."""
+    tools = _tools_with_env(session, SAM_MODELS_DIR=str(tmp_path))
+    expected = tmp_path / "sam1"
+
+    with pytest.raises(ToolError, match=r"No\s+SAM\s+checkpoint") as e:
+        tools.i_sam_opencl(group="rgb", output="out", flags="n")
+    assert str(expected) in " ".join(str(e.value).split())
 
 
 def test_checkpoint_and_weights_dir_are_exclusive(session, tmp_path):
@@ -116,13 +129,13 @@ def test_checkpoint_and_weights_dir_are_exclusive(session, tmp_path):
         )
 
 
-def test_model_needs_weights_dir(session, tmp_path):
+def test_model_excludes_checkpoint(session, tmp_path):
     """model= chooses among the files of a weights folder only."""
     tools = Tools(session=session)
     dummy = tmp_path / "dummy.pth"
     dummy.write_bytes(b"not used")
 
-    with pytest.raises(ToolError, match=r"requires"):
+    with pytest.raises(ToolError, match=r"mutually\s+exclusive"):
         tools.i_sam_opencl(
             group="rgb", checkpoint=str(dummy), model="vit_b", output="out"
         )
@@ -134,7 +147,9 @@ def test_empty_weights_dir(session, tmp_path):
     (tmp_path / "readme.txt").write_text("no weights here")
 
     with pytest.raises(ToolError, match=r"No\s+SAM\s+checkpoint"):
-        tools.i_sam_opencl(group="rgb", weights_dir=str(tmp_path), output="out")
+        tools.i_sam_opencl(
+            group="rgb", weights_dir=str(tmp_path), output="out", flags="n"
+        )
 
 
 def test_weights_dir_without_requested_model(session, tmp_path):
@@ -145,7 +160,11 @@ def test_weights_dir_without_requested_model(session, tmp_path):
 
     with pytest.raises(ToolError, match=r"No\s+vit_b\s+checkpoint"):
         tools.i_sam_opencl(
-            group="rgb", weights_dir=str(tmp_path), model="vit_b", output="out"
+            group="rgb",
+            weights_dir=str(tmp_path),
+            model="vit_b",
+            output="out",
+            flags="n",
         )
 
 
@@ -175,3 +194,81 @@ def test_weights_dir_segments(session, checkpoint, device_options, tmp_path):
     )
     topo = tools.v_info(map="from_folder", flags="t", format="json").json
     assert topo["centroids"] >= len(RECTANGLES)
+
+
+# Published sizes of the checkpoints the module downloads.
+RELEASES = {
+    "vit_h": ("sam_vit_h_4b8939.pth", 2564550879),
+    "vit_l": ("sam_vit_l_0b3195.pth", 1249524607),
+    "vit_b": ("sam_vit_b_01ec64.pth", 375042383),
+}
+
+
+@pytest.fixture
+def mirror(tmp_path):
+    """A local HTTP server standing in for the download site; yields the
+    folder it serves and its URL."""
+    root = tmp_path / "mirror"
+    root.mkdir()
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    handler = functools.partial(Quiet, directory=str(root))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield root, f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_download_rejects_wrong_size(session, tmp_path, mirror):
+    """A download that does not have the published size is discarded, not
+    installed in the weights folder."""
+    root, url = mirror
+    (root / "sam_vit_b_01ec64.pth").write_bytes(b"truncated")
+    weights = tmp_path / "weights"
+    tools = _tools_with_env(session, I_SAM_OPENCL_DOWNLOAD_URL=url)
+
+    with pytest.raises(ToolError, match=r"instead\s+of\s+375042383"):
+        tools.i_sam_opencl(
+            group="rgb", weights_dir=str(weights), model="vit_b", output="out"
+        )
+    assert not list(weights.glob("*.pth*"))
+
+
+def test_download_fetches_missing_model(session, checkpoint, tmp_path, mirror):
+    """A model missing from the weights folder (created if needed) is
+    downloaded there and used."""
+    variant = next(
+        (
+            v
+            for v, (_, size) in RELEASES.items()
+            if Path(checkpoint).stat().st_size == size
+        ),
+        None,
+    )
+    if variant is None:
+        pytest.skip("checkpoint is not one of the published release files")
+    name, size = RELEASES[variant]
+    if shutil.disk_usage(tmp_path).free < 2 * size:
+        pytest.skip(f"not enough free space in {tmp_path} for a {size} byte copy")
+    root, url = mirror
+    (root / name).symlink_to(checkpoint)
+    weights = tmp_path / "new" / "weights"
+    tools = _tools_with_env(session, I_SAM_OPENCL_DOWNLOAD_URL=url)
+
+    # A platform that does not exist stops the run right after the
+    # checkpoint has been fetched and read.
+    with pytest.raises(ToolError, match=r"OpenCL") as e:
+        tools.i_sam_opencl(
+            group="rgb",
+            weights_dir=str(weights),
+            model=variant,
+            output="out",
+            platform="no_such_platform",
+        )
+    assert "does not hold" not in str(e.value)
+    assert (weights / name).stat().st_size == size
+    assert not list(weights.glob("*.part"))

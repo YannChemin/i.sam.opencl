@@ -6,9 +6,8 @@
  *               topological vector area map: overlap resolution, small
  *               region merging, boundary tracing, simplification and
  *               topology cleaning.
- * COPYRIGHT:    (C) 2026 by Yann Chemin and the GRASS Development Team
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: Unlicense
  *
  *****************************************************************************/
 

@@ -35,9 +35,20 @@ SAM; the model variant is detected from the tensor shapes:
   (358 MiB, fastest).</li>
 </ul>
 
-<p>The weights are not installed with the module. Instead of one
-<b>checkpoint</b> file, <b>weights_dir</b> can name the folder where the
-checkpoints were downloaded. A checkpoint is recognised there by
+<p>The weights are too large to be installed with the module. Without a
+<b>checkpoint</b> file, the module looks for one in the weights folder:
+<b>weights_dir</b>, by default the central folder
+<code>$SAM_MODELS_DIR/sam1</code>, or <code>~/models/sam/sam1</code> when
+the environment variable <code>SAM_MODELS_DIR</code> is not set. If the
+model is not there, its checkpoint is downloaded into that folder
+(created if needed) on first use and reused afterwards: the model chosen
+with <b>model</b>, or ViT-H when the folder holds no checkpoint at all.
+The download is checked against the published size, resumes where an
+interrupted one stopped, and waits for another run downloading the same
+file. The <b>-n</b> flag forbids downloading: a missing checkpoint is
+then an error.</p>
+
+<p>A checkpoint is recognised in the weights folder by
 <code>vit_h</code>, <code>vit_l</code> or <code>vit_b</code> in its
 <code>.pth</code> file name, so renamed copies such as
 <code>sam_vit_h_checkpoint.pth</code> are found too. The best model present
@@ -161,7 +172,9 @@ the list of masks are written there. The script
 <code>tests/reference_compare.py</code> in the source tree compares them
 with the PyTorch reference implementation.
 <code>I_SAM_OPENCL_PROFILE=1</code> prints the time spent in each OpenCL
-kernel.
+kernel. <code>I_SAM_OPENCL_DOWNLOAD_URL</code> replaces the download
+location (<code>https://dl.fbaipublicfiles.com/segment_anything</code>),
+for a local mirror.
 
 <h2>EXAMPLES</h2>
 
@@ -185,12 +198,11 @@ v.db.select lsat_segments | head
 
 <h3>Weights folder</h3>
 
-With the three checkpoints downloaded into <code>~/models/sam</code>, use the
-fastest model for a quick look:
+Use the fastest model for a quick look; it is downloaded into
+<code>~/models/sam/sam1</code> the first time:
 
 <div class="code"><pre>
-i.sam.opencl group=lsat_rgb weights_dir=~/models/sam model=vit_b \
-    output=lsat_quick maxsize=50000
+i.sam.opencl group=lsat_rgb model=vit_b output=lsat_quick maxsize=50000
 </pre></div>
 
 <h3>Agricultural parcels</h3>

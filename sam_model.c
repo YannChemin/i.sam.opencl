@@ -5,9 +5,8 @@
  * PURPOSE:      Segment Anything (SAM) image encoder and mask decoder
  *               forward passes on OpenCL, weights read directly from the
  *               original PyTorch checkpoint.
- * COPYRIGHT:    (C) 2026 by Yann Chemin and the GRASS Development Team
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: Unlicense
  *
  *****************************************************************************/
 

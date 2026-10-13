@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Unlicense */
+
 #ifndef I_SAM_OPENCL_SAM_MODEL_H
 #define I_SAM_OPENCL_SAM_MODEL_H
 

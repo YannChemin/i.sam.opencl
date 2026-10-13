@@ -5,9 +5,8 @@
  * PURPOSE:      Minimal reader for PyTorch checkpoints (torch.save zip
  *               format): parses the zip central directory and the
  *               state_dict pickle, without any Python dependency.
- * COPYRIGHT:    (C) 2026 by Yann Chemin and the GRASS Development Team
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: Unlicense
  *
  *****************************************************************************/
 

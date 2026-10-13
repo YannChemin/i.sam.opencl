@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Unlicense
 """Compare i.sam.opencl debug dumps with the PyTorch segment_anything code.
 
 Run i.sam.opencl with the environment variable I_SAM_OPENCL_DUMP set to a

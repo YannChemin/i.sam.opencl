@@ -6,13 +6,13 @@
  *               Anything Model (SAM) on an OpenCL device, reading the
  *               original PyTorch checkpoint, and write the segments as a
  *               clean vector area map.
- * COPYRIGHT:    (C) 2026 by Yann Chemin and the GRASS Development Team
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: Unlicense
  *
  *****************************************************************************/
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +24,7 @@
 #include <grass/raster.h>
 
 #include "amg.h"
+#include "download.h"
 #include "image.h"
 #include "ocl_backend.h"
 #include "pth_loader.h"
@@ -47,6 +48,52 @@ static const struct {
 
 #define N_VARIANTS ((int)(sizeof(variants) / sizeof(variants[0])))
 
+/* Checkpoints fetched when a model is missing from the weights folder
+ * (sizes as published), in the order of variants[]. */
+#define DOWNLOAD_URL "https://dl.fbaipublicfiles.com/segment_anything"
+
+static const struct {
+    const char *file;
+    long long size;
+} releases[N_VARIANTS] = {
+    {"sam_vit_h_4b8939.pth", 2564550879LL},
+    {"sam_vit_l_0b3195.pth", 1249524607LL},
+    {"sam_vit_b_01ec64.pth", 375042383LL},
+};
+
+/* The central folder of SAM checkpoints: $SAM_MODELS_DIR/sam1, by default
+ * ~/models/sam/sam1. */
+static char *default_weights_dir(void)
+{
+    const char *base = getenv("SAM_MODELS_DIR");
+    char *dir;
+
+    if (base && *base)
+        G_asprintf(&dir, "%s/sam1", base);
+    else
+        G_asprintf(&dir, "%s/models/sam/sam1", G_home());
+    return dir;
+}
+
+/* Download the checkpoint of variant into dir; returns its path.
+ * I_SAM_OPENCL_DOWNLOAD_URL replaces the download location (a mirror). */
+static char *fetch_checkpoint(const char *dir, const char *variant)
+{
+    const char *base = getenv("I_SAM_OPENCL_DOWNLOAD_URL");
+    char *url, *path;
+    int v;
+
+    for (v = 0; strcmp(variants[v].name, variant) != 0; v++)
+        ;
+    if (!base || !*base)
+        base = DOWNLOAD_URL;
+    G_asprintf(&url, "%s/%s", base, releases[v].file);
+    G_asprintf(&path, "%s/%s", dir, releases[v].file);
+    download_file(url, path, releases[v].size);
+    G_free(url);
+    return path;
+}
+
 static int cmp_names(const void *a, const void *b)
 {
     return strcmp(*(char *const *)a, *(char *const *)b);
@@ -56,7 +103,8 @@ static int cmp_names(const void *a, const void *b)
  * file whose name contains the variant (e.g. sam_vit_h_4b8939.pth or a
  * renamed sam_vit_h_checkpoint.pth). With want == NULL the best variant
  * present is chosen. Names are scanned in sorted order, so the choice is
- * reproducible when a folder holds several files of one variant. */
+ * reproducible when a folder holds several files of one variant. Returns
+ * NULL if there is none; a missing folder counts as empty. */
 static char *find_checkpoint(const char *dir, const char *want)
 {
     DIR *d;
@@ -66,8 +114,12 @@ static char *find_checkpoint(const char *dir, const char *want)
     char *result = NULL;
 
     d = opendir(dir);
-    if (!d)
-        G_fatal_error(_("Unable to open weights folder <%s>"), dir);
+    if (!d) {
+        if (errno == ENOENT)
+            return NULL;
+        G_fatal_error(_("Unable to open weights folder <%s>: %s"), dir,
+                      strerror(errno));
+    }
     while ((e = readdir(d))) {
         size_t len = strlen(e->d_name);
         struct stat st;
@@ -109,16 +161,6 @@ static char *find_checkpoint(const char *dir, const char *want)
     for (i = 0; i < n; i++)
         G_free(names[i]);
     G_free(names);
-
-    if (!result) {
-        if (want)
-            G_fatal_error(_("No %s checkpoint (a .pth file with '%s' in its "
-                            "name) in weights folder <%s>"),
-                          want, want, dir);
-        G_fatal_error(_("No SAM checkpoint (a .pth file with vit_h, vit_l "
-                        "or vit_b in its name) in weights folder <%s>"),
-                      dir);
-    }
     return result;
 }
 
@@ -150,6 +192,7 @@ int main(int argc, char *argv[])
             *maxsize, *overlap, *simplify, *tile_size, *tile_overlap, *batch,
             *device, *platform;
     } opt;
+    struct Flag *offline;
     struct ocl_backend ocl;
     struct pth_file pf;
     struct sam_model model;
@@ -159,7 +202,7 @@ int main(int argc, char *argv[])
     struct vect_params vp;
     struct Cell_head win;
     double lo, hi, t0, t1;
-    char source[GNAME_MAX * 2 + 32], *desc, *checkpoint;
+    char source[GNAME_MAX * 2 + 32], *desc, *checkpoint, *dir = NULL;
     const struct pth_tensor *pos;
     int v;
 
@@ -200,10 +243,11 @@ int main(int argc, char *argv[])
     opt.weights_dir = G_define_standard_option(G_OPT_M_DIR);
     opt.weights_dir->key = "weights_dir";
     opt.weights_dir->required = NO;
-    opt.weights_dir->label = _("Folder of downloaded SAM checkpoints");
+    opt.weights_dir->label = _("Folder of SAM checkpoints");
     opt.weights_dir->description =
-        _("Folder holding one or more .pth checkpoints named with vit_h, "
-          "vit_l or vit_b; used instead of checkpoint");
+        _("Folder of .pth checkpoints named with vit_h, vit_l or vit_b, "
+          "where missing ones are downloaded; default: $SAM_MODELS_DIR/sam1, "
+          "else ~/models/sam/sam1");
     opt.weights_dir->guisection = _("Model");
 
     opt.model = G_define_option();
@@ -213,7 +257,8 @@ int main(int argc, char *argv[])
     opt.model->options = "vit_h,vit_l,vit_b";
     opt.model->label = _("SAM model to use from the weights folder");
     opt.model->description =
-        _("Default: the best one present (vit_h, then vit_l, then vit_b)");
+        _("Default: the best one present (vit_h, then vit_l, then vit_b), "
+          "or vit_h if there is none");
     G_asprintf(&desc, "vit_h;%s;vit_l;%s;vit_b;%s",
                _("ViT-H, 2.4 GiB, best quality"), _("ViT-L, 1.2 GiB"),
                _("ViT-B, 358 MiB, fastest"));
@@ -389,9 +434,14 @@ int main(int argc, char *argv[])
         _("Use only OpenCL platforms whose name contains this text");
     opt.platform->guisection = _("Processing");
 
-    G_option_required(opt.checkpoint, opt.weights_dir, NULL);
+    offline = G_define_flag();
+    offline->key = 'n';
+    offline->description =
+        _("Do not download a missing checkpoint into the weights folder");
+    offline->guisection = _("Model");
+
     G_option_exclusive(opt.checkpoint, opt.weights_dir, NULL);
-    G_option_requires(opt.model, opt.weights_dir, NULL);
+    G_option_exclusive(opt.checkpoint, opt.model, NULL);
 
     if (G_parser(argc, argv))
         exit(EXIT_FAILURE);
@@ -440,12 +490,31 @@ int main(int argc, char *argv[])
     /* Validate the cheap inputs (group, checkpoint index) before the
      * OpenCL device is initialized and the weights are uploaded. */
     image_read_group(opt.group->answer, opt.subgroup->answer, lo, hi, &img);
-    checkpoint =
-        opt.checkpoint->answer
-            ? G_store(opt.checkpoint->answer)
-            : find_checkpoint(opt.weights_dir->answer, opt.model->answer);
-    if (opt.weights_dir->answer)
+    if (opt.checkpoint->answer)
+        checkpoint = G_store(opt.checkpoint->answer);
+    else {
+        dir = opt.weights_dir->answer ? G_store(opt.weights_dir->answer)
+                                      : default_weights_dir();
+        checkpoint = find_checkpoint(dir, opt.model->answer);
+        if (!checkpoint) {
+            const char *want =
+                opt.model->answer ? opt.model->answer : variants[0].name;
+
+            if (offline->answer) {
+                if (opt.model->answer)
+                    G_fatal_error(_("No %s checkpoint (a .pth file with '%s' "
+                                    "in its name) in weights folder <%s>"),
+                                  want, want, dir);
+                G_fatal_error(_("No SAM checkpoint (a .pth file with vit_h, "
+                                "vit_l or vit_b in its name) in weights "
+                                "folder <%s>"),
+                              dir);
+            }
+            checkpoint = fetch_checkpoint(dir, want);
+        }
         G_message(_("Using checkpoint <%s>"), checkpoint);
+        G_free(dir);
+    }
     pth_open(&pf, checkpoint);
     pos = pth_find(&pf, "image_encoder.pos_embed");
     if (!pos || !pth_find(&pf, "mask_decoder.iou_token.weight"))
