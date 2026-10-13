@@ -19,6 +19,7 @@
 #include <grass/gis.h>
 #include <grass/glocale.h>
 
+#include "progress.h"
 #include "pth_loader.h"
 #include "sam_model.h"
 
@@ -395,7 +396,6 @@ static void load_encoder(struct sam_model *m, const struct pth_file *pf)
         const char *p = "image_encoder.blocks";
         long rows;
 
-        G_percent(i, m->depth, 5);
         snprintf(name, sizeof(name), "%s.%d.attn.rel_pos_h", p, i);
         t = pth_require(pf, name, 2, (long[]){-1, m->hd});
         rows = t->shape[0];
@@ -432,7 +432,6 @@ static void load_encoder(struct sam_model *m, const struct pth_file *pf)
         s1[0] = E;
         b->l2b = load_dev_fmt(m, pf, 1, s1, "%s.%d.mlp.lin2.bias", p, i);
     }
-    G_percent(1, 1, 1);
 
     s4[0] = SAM_DIM;
     s4[1] = E;
@@ -718,7 +717,10 @@ void sam_encode(struct sam_model *m, const float *img)
         int nwx = 1, nwin = 1, Nq = T, rows = T, side = SAM_GRID, hc, h0;
         cl_mem A = m->xn;
 
-        G_percent(i, m->depth, 10);
+        /* Report the blocks the device has finished, not the ones
+         * queued: enqueueing all of them takes milliseconds. */
+        clFinish(m->ocl->queue);
+        progress_part(i, m->depth);
         layernorm(m, T, E, m->x, m->xn, b->n1w, b->n1b, ENC_EPS, ACT_NONE);
 
         if (ws) {
@@ -790,7 +792,6 @@ void sam_encode(struct sam_model *m, const float *img)
         linear(m, T, m->mlp, E, m->mlpbuf, 0, b->l2w, b->l2b, m->x, 0, ACT_NONE,
                1);
     }
-    G_percent(1, 1, 1);
 
     /* Neck: 1x1 conv, LayerNorm2d, 3x3 conv, LayerNorm2d. */
     {

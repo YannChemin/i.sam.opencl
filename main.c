@@ -27,6 +27,7 @@
 #include "download.h"
 #include "image.h"
 #include "ocl_backend.h"
+#include "progress.h"
 #include "pth_loader.h"
 #include "sam_model.h"
 #include "vectorize.h"
@@ -201,7 +202,7 @@ int main(int argc, char *argv[])
     struct amg_params ap;
     struct vect_params vp;
     struct Cell_head win;
-    double lo, hi, t0, t1;
+    double lo, hi, t0, t1, load_gib;
     char source[GNAME_MAX * 2 + 32], *desc, *checkpoint, *dir = NULL;
     const struct pth_tensor *pos;
     int v;
@@ -487,6 +488,16 @@ int main(int argc, char *argv[])
              opt.subgroup->answer ? opt.subgroup->answer : "");
     vp.source = source;
 
+    /* One progress bar for the whole run: plan the work that the region
+     * and the options already determine; the checkpoint is added once
+     * it is open. */
+    progress_plan(PG_READ,
+                  (double)Rast_window_rows() * Rast_window_cols() / 1e6);
+    amg_plan(Rast_window_cols(), Rast_window_rows(), &ap,
+             atoi(opt.batch->answer));
+    progress_plan(PG_BUILD, 1);
+    progress_plan(PG_VECTOR, 1);
+
     /* Validate the cheap inputs (group, checkpoint index) before the
      * OpenCL device is initialized and the weights are uploaded. */
     image_read_group(opt.group->answer, opt.subgroup->answer, lo, hi, &img);
@@ -531,10 +542,16 @@ int main(int argc, char *argv[])
                           checkpoint, opt.model->answer, opt.model->answer);
     }
     G_free(checkpoint);
+    /* The image encoder, prompt encoder and mask decoder: every tensor. */
+    load_gib = pth_bytes(&pf, "") / 1073741824.0;
+    progress_plan(PG_LOAD, load_gib);
 
     t0 = now();
+    progress_begin(PG_BUILD, 1);
     ocl_init(&ocl, opt.device->answer, opt.platform->answer);
+    progress_begin(PG_LOAD, load_gib);
     sam_load(&model, &ocl, &pf, atoi(opt.batch->answer));
+    progress_end();
     pth_close(&pf);
     t1 = now();
     G_message(_("Model ready in %.1f s"), t1 - t0);
@@ -549,6 +566,7 @@ int main(int argc, char *argv[])
     ocl_free(&ocl);
 
     vectorize_masks(&masks, &img, &vp);
+    progress_finish();
     G_message(_("Vectorization took %.1f s"), now() - t0);
 
     mask_list_free(&masks);
