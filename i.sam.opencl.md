@@ -134,6 +134,42 @@ about 1.3 GiB with the default **batch** of 32 prompts; a smaller
 **batch** reduces memory use. Buffers are kept below the device's
 maximum allocation size.
 
+### Device profile and precision
+
+The **profile** chooses how buffers are allocated and which matrix
+product kernels run, to suit the device:
+
+- *cpu*: a device working in host memory, such as PoCL. Buffers are
+  mapped instead of copied, and the matrix products use kernels without
+  local memory that stream rows with 8-wide vector loads, which PoCL
+  runs far better than the GPU kernels.
+- *igpu*: a GPU sharing host memory (integrated graphics, APU). Buffers
+  are allocated in host memory and written and read by mapping them
+  (zero-copy), so no transfer crosses the memory bus twice.
+- *dgpu*: a GPU with its own memory on internal PCI Express. Buffers
+  live in device memory.
+- *egpu*: a GPU behind a slow link, such as a Thunderbolt or USB4
+  enclosure. Buffers live in device memory and large transfers go
+  through a pinned staging buffer. The weights stay on the device for
+  the whole run.
+
+With **profile**=*auto* the profile is detected: *cpu* for a CPU
+device, *igpu* for a GPU that reports unified memory, *egpu* for a GPU
+whose PCI function Linux marks as removable (when the driver reports
+its PCI address), *dgpu* otherwise. The chosen profile and the reason
+are printed. A profile can be forced to compare them; every profile
+gives the same results, only the speed differs.
+
+**precision**=*fp16* stores the weight matrices of the linear layers
+(most of the model's memory) as IEEE half-precision numbers, read with
+the core OpenCL `vload_half` functions, so no half-precision extension
+is needed; the arithmetic stays in single precision. It halves their
+memory and the bytes read by the matrix products, which matters on
+devices limited by memory bandwidth (integrated GPUs, CPUs). Rounding
+the weights to half precision changes the masks slightly; check the
+result against **precision**=*fp32* (the default) on a sample before
+relying on it.
+
 ### Performance
 
 On an AMD Radeon Pro WX 7100 (Polaris, 16 GiB, Mesa rusticl), with the
@@ -159,7 +195,7 @@ the 8-bit crops, the encoder inputs, the image embeddings and the list
 of masks are written there. The script `tests/reference_compare.py` in
 the source tree compares them with the PyTorch reference
 implementation. `I_SAM_OPENCL_PROFILE=1` prints the time spent in each
-OpenCL kernel. `I_SAM_OPENCL_DOWNLOAD_URL` replaces the download location
+OpenCL kernel. Each line gives the event time and the wall-clock time (some drivers, such as rusticl on Intel iris, report wrong event times), and for the matrix products the achieved GFLOP/s, which shows whether a kernel is limited by compute or by memory bandwidth. `I_SAM_OPENCL_DOWNLOAD_URL` replaces the download location
 (`https://dl.fbaipublicfiles.com/segment_anything`), for a local mirror.
 
 ## EXAMPLES
