@@ -57,7 +57,7 @@ def session(tmp_path_factory):
 def checkpoint():
     path = os.environ.get("I_SAM_OPENCL_CHECKPOINT")
     if not path or not Path(path).is_file():
-        pytest.skip("set I_SAM_OPENCL_CHECKPOINT to a SAM .pth checkpoint")
+        pytest.skip("set I_SAM_OPENCL_CHECKPOINT to a SAM .pth checkpoint")  # ty: ignore[too-many-positional-arguments]
     return path
 
 

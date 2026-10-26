@@ -213,7 +213,7 @@ def mirror(tmp_path):
     root.mkdir()
 
     class Quiet(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *args):
+        def log_message(self, format, *args):
             pass
 
     handler = functools.partial(Quiet, directory=str(root))
@@ -251,10 +251,12 @@ def test_download_fetches_missing_model(session, checkpoint, tmp_path, mirror):
         None,
     )
     if variant is None:
-        pytest.skip("checkpoint is not one of the published release files")
+        pytest.skip("checkpoint is not one of the published release files")  # ty: ignore[too-many-positional-arguments]
     name, size = RELEASES[variant]
     if shutil.disk_usage(tmp_path).free < 2 * size:
-        pytest.skip(f"not enough free space in {tmp_path} for a {size} byte copy")
+        pytest.skip(
+            f"not enough free space in {tmp_path} for a {size} byte copy"  # ty: ignore[too-many-positional-arguments]
+        )
     root, url = mirror
     (root / name).symlink_to(checkpoint)
     weights = tmp_path / "new" / "weights"
